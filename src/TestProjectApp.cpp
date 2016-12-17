@@ -80,7 +80,6 @@ class TestProjectApp
   FbxManager* manager;
   FbxScene* scene;
   FbxNode* root_node;
-  FbxAnimEvaluator* scene_evaluator;
 
 
   // 表示物の情報を名前で管理
@@ -148,104 +147,37 @@ TriMesh TestProjectApp::createMesh(FbxMesh* mesh)
 
   {
     // 頂点法線
-    // FIXME:FBXでは複数の法線セットを持てるのだが、今回は0番目にしか対応せず
-    FbxGeometryElementNormal* normal = mesh->GetElementNormal(0);
+    FbxArray<FbxVector4> normals;
+    mesh->GetPolygonVertexNormals(normals);
 
-    if (normal)
+    console() << "normals:" << normals.Size() << std::endl;
+
+    for (int i = 0; i < normals.Size(); ++i)
     {
-      // FIXME:FBXでは様々なデータの格納方法がある→めんどい
-      // 法線のマッピングモードを調べる
-      FbxGeometryElement::EMappingMode mapping = normal->GetMappingMode();
-      // 格納方式を調べる
-      FbxGeometryElement::EReferenceMode reference = normal->GetReferenceMode();
-
-      console() << "Normal:mapping:" << mapping << " reference:" << reference << std::endl;
-
-      //
-      // blender    FbxGeometryElement::EMappingMode::eByPolygonVertex
-      //            FbxGeometryElement::EReferenceMode::eDirect
-      // Cheetah3d  FbxGeometryElement::EMappingMode::eByPolygonVertex
-      //            FbxGeometryElement::EReferenceMode::eIndexToDirect
-      //
-      if (mapping == FbxGeometryElement::EMappingMode::eByPolygonVertex)
-      {
-        switch (reference)
-        {
-        case FbxGeometryElement::EReferenceMode::eDirect:
-          // コントロール点に対して1:1の対応
-          for (int i = 0; i < triMesh.getNumIndices(); ++i)
-          {
-            auto n = normal->GetDirectArray().GetAt(i);
-            triMesh.appendNormal(Vec3f(n[0], n[1], n[2]));
-          }
-          break;
-
-        case FbxGeometryElement::EReferenceMode::eIndexToDirect:
-          // 独自法線配列が存在する
-          for (int i = 0; i < triMesh.getNumIndices(); ++i)
-          {
-            auto index = normal->GetIndexArray().GetAt(i);
-            auto n = normal->GetDirectArray().GetAt(index);
-            triMesh.appendNormal(Vec3f(n[0], n[1], n[2]));
-          }
-          break;
-
-        default:
-          console() << "unknown normal reference." << std::endl;
-          break;
-        }
-      }
-      else
-      {
-        console() << "unknown normal mapping." << std::endl;
-      }
+      const FbxVector4& n = normals[i];
+      triMesh.appendNormal(Vec3f(n[0], n[1], n[2]));
     }
   }
 
   {
     // UV
-    // FIXME:FBXでは複数のUVセットを持てるのだが、今回は0番目にしか対応せず
-    auto element = mesh->GetElementUV(0);
+    FbxStringList uvsetName;
+    mesh->GetUVSetNames(uvsetName);
 
-    if (element)
+    if (uvsetName.GetCount() > 0)
     {
-      auto mapping   = element->GetMappingMode();
-      auto reference = element->GetReferenceMode();
+      // 最初のUVセットを取り出す
+      console() << "UV SET:" << uvsetName.GetStringAt(0) << std::endl;
 
-      console() << "UV:mapping:" << mapping << " reference:" << reference << std::endl;
+      FbxArray<FbxVector2> uvsets;
+      mesh->GetPolygonVertexUVs(uvsetName.GetStringAt(0), uvsets);
 
-      if (mapping == FbxGeometryElement::EMappingMode::eByPolygonVertex)
+      console() << "UV:" << uvsets.Size() << std::endl;
+
+      for (int i = 0; i < uvsets.Size(); ++i)
       {
-        switch (reference)
-        {
-        case FbxGeometryElement::EReferenceMode::eDirect:
-          // コントロール点に対して1:1の対応
-          for (int i = 0; i < triMesh.getNumIndices(); ++i)
-          {
-            auto uv = element->GetDirectArray().GetAt(i);
-            // FIXME:元データの都合でYを反転している(してない実装も見かける)
-            triMesh.appendTexCoord(Vec2f(uv[0], uv[1]));
-          }
-          break;
-
-        case FbxGeometryElement::EReferenceMode::eIndexToDirect:
-          // 独自法線配列が存在する
-          for (int i = 0; i < triMesh.getNumIndices(); ++i)
-          {
-            auto index = element->GetIndexArray().GetAt(i);
-            auto uv = element->GetDirectArray().GetAt(index);
-            triMesh.appendTexCoord(Vec2f(uv[0], uv[1]));
-          }
-          break;
-
-        default:
-          console() << "unknown UV reference." << std::endl;
-          break;
-        }
-      }
-      else
-      {
-        console() << "unknown UV mapping." << std::endl;
+        const FbxVector2& uv = uvsets[i];
+        triMesh.appendTexCoord(Vec2f(uv[0], uv[1]));
       }
     }
   }
@@ -360,46 +292,47 @@ void TestProjectApp::setAnimation(const int index)
 // 描画
 void TestProjectApp::draw(FbxNode* node, FbxTime& time)
 {
-  FbxNodeAttribute* attr = node->GetNodeAttribute();
-  if (attr)
+  // 行列
+  FbxAMatrix& matrix = node->EvaluateGlobalTransform(time);
+
+  // TIPS:１つのノードに複数のメッシュが含まれる
+  int attr_count = node->GetNodeAttributeCount();
+  for (int i = 0; i < attr_count; ++i)
   {
+    FbxNodeAttribute* attr = node->GetNodeAttributeByIndex(i);
     switch(attr->GetAttributeType())
     {
-      case FbxNodeAttribute::eMesh:
+    case FbxNodeAttribute::eMesh:
+      {
+        gl::pushModelView();
+
+        glMatrixMode(GL_MODELVIEW);
+        glMultMatrixd(matrix);
+
+        // 描画に使うメッシュとマテリアルを特定
+        FbxMesh* mesh = static_cast<FbxMesh*>(attr);
+        const auto& tri_mesh = meshes.at(mesh->GetName());
+
+        FbxSurfaceMaterial* material = node->GetMaterial(i);
+        const auto& mat = materials.at(material->GetName());
+
+        mat.material.apply();
+        if (mat.texture)
         {
-          gl::pushModelView();
-
-          // 行列
-          // FbxAMatrix& matrix = node->EvaluateGlobalTransform();
-          FbxAMatrix& matrix = scene_evaluator->GetNodeGlobalTransform(node, time);
-
-          glMatrixMode(GL_MODELVIEW);
-          glMultMatrixd(matrix);
-
-          // 描画に使うメッシュとマテリアルを特定
-          FbxMesh* mesh = node->GetMesh();
-          const auto& tri_mesh = meshes.at(mesh->GetName());
-
-          FbxSurfaceMaterial* material = node->GetMaterial(0);
-          const auto& mat = materials.at(material->GetName());
-
-          mat.material.apply();
-          if (mat.texture)
-          {
-            mat.texture->enableAndBind();
-          }
-
-          gl::draw(tri_mesh);
-
-          if (mat.texture)
-          {
-            mat.texture->unbind();
-            mat.texture->disable();
-          }
-
-          gl::popModelView();
+          mat.texture->enableAndBind();
         }
-        break;
+
+        gl::draw(tri_mesh);
+
+        if (mat.texture)
+        {
+          mat.texture->unbind();
+          mat.texture->disable();
+        }
+
+        gl::popModelView();
+      }
+      break;
 
     default:
       break;
@@ -456,7 +389,7 @@ void TestProjectApp::setup()
 
   // FBXファイルを読み込む
   // TIPS: getAssetPathは、assets内のファイルを探して、フルパスを取得する
-  std::string path = getAssetPath("negimiku.fbx").string();
+  std::string path = getAssetPath("test.fbx").string();
 #ifdef _MSC_VER
   path = getUTF8Path(path);
 #endif
@@ -525,8 +458,6 @@ void TestProjectApp::setup()
   console() << "Anim:" << animation_stack_count << std::endl;
   setAnimation(current_animation_stack);
 
-  scene_evaluator = scene->GetAnimationEvaluator();
-
   // FBS SDKを破棄
   // manager->Destroy();
 }
@@ -576,6 +507,9 @@ void TestProjectApp::draw()
     Matrix44f m = rotate.toMatrix44();
     gl::multModelView(m);
   }
+
+  gl::translate(0, 0, 0);
+  gl::scale(1, 1, 1);
 
   // 描画
   FbxTime time;
