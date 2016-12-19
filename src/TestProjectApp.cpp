@@ -256,10 +256,10 @@ Material TestProjectApp::createMaterial(FbxSurfaceMaterial* material)
         // TIPS:テクスチャのパスは絶対パスで格納されているので
         //      余分なディレクトリ名とかを削除している
         // TODO:複数のマテリアルで同じテクスチャが指定されている場合に対応
-        fs::path name = texture->GetFileName();
+        fs::path name = (const char *)(FbxPathUtils::GetFileName(texture->GetFileName()));
 
         // TIPS:画像を読み込んで上下反転
-        Surface surface = loadImage(loadAsset(name.filename()));
+        Surface surface = loadImage(loadAsset(name));
         ip::flipVertical(&surface);
 
         mat.texture = surface;
@@ -389,7 +389,7 @@ void TestProjectApp::setup()
 
   // FBXファイルを読み込む
   // TIPS: getAssetPathは、assets内のファイルを探して、フルパスを取得する
-  std::string path = getAssetPath("test.fbx").string();
+  std::string path = getAssetPath("negimiku.fbx").string();
 #ifdef _MSC_VER
   path = getUTF8Path(path);
 #endif
